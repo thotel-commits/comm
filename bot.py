@@ -20,7 +20,7 @@ def env(name, default=""):
 
 ACCOUNT = env("STEEM_ACCOUNT")
 POSTING_KEY = env("STEEM_POSTING_KEY")
-MIN_HP = float(env("MIN_HP", "5000"))
+MIN_SP = float(env("MIN_SP", "5000"))
 DAILY_LIMIT = int(env("DAILY_LIMIT", "20"))
 MAX_PER_RUN = int(env("MAX_PER_RUN", "1"))
 RUN_EVERY_MIN = int(env("RUN_EVERY_MIN", "30"))
@@ -34,7 +34,7 @@ DRY_RUN = env("DRY_RUN", "true").lower() != "false"
 LOG_TEXT = env("LOG_TEXT", "false").lower() == "true"
 BLACKLIST = {a.strip().lower() for a in env("BLACKLIST").split(",") if a.strip()}
 MAX_PAGES = int(env("MAX_PAGES", "100"))
-MAX_HP_CHECKS = 150
+MAX_SP_CHECKS = 150
 CHECK_AFTER_HOURS = 6
 
 SYSTEM = env("COMMENT_RULES") or "Write one short, relevant comment for this blog post. Reply with exactly SKIP if you cannot."
@@ -109,7 +109,7 @@ def account(author):
     return _acc[author]
 
 
-def hp_of(author):
+def sp_of(author):
     global _ratio
     if _ratio is None:
         g = rpc("condenser_api.get_dynamic_global_properties", [])
@@ -280,14 +280,14 @@ def main():
     checks, done, seen_authors = 0, 0, set()
 
     for p in cands:
-        if done >= budget or checks >= MAX_HP_CHECKS:
+        if done >= budget or checks >= MAX_SP_CHECKS:
             break
         if p["author"] in seen_authors:
             continue
         seen_authors.add(p["author"])
         checks += 1
         try:
-            if hp_of(p["author"]) < MIN_HP or profile_looks_like_project(p["author"]):
+            if sp_of(p["author"]) < MIN_SP or profile_looks_like_project(p["author"]):
                 continue
             text = make_comment(p)
             time.sleep(5)
