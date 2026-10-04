@@ -23,6 +23,7 @@ POSTING_KEY = env("STEEM_POSTING_KEY")
 MIN_SP = float(env("MIN_SP", "5000"))
 DAILY_LIMIT = int(env("DAILY_LIMIT", "20"))
 MAX_PER_RUN = int(env("MAX_PER_RUN", "1"))
+UPVOTE_WEIGHT = max(1, min(10000, int(env("UPVOTE_WEIGHT", "10000"))))
 RUN_EVERY_MIN = int(env("RUN_EVERY_MIN", "30"))
 MIN_GAP_MIN = int(env("MIN_GAP_MIN", "25"))
 JITTER_MAX_SEC = int(env("JITTER_MAX_SEC", "300"))
@@ -34,6 +35,11 @@ DRY_RUN = env("DRY_RUN", "true").lower() != "false"
 LOG_TEXT = env("LOG_TEXT", "false").lower() == "true"
 BLACKLIST = {a.strip().lower() for a in env("BLACKLIST").split(",") if a.strip()}
 MAX_PAGES = int(env("MAX_PAGES", "100"))
+MIN_AGE_MIN = int(env("MIN_AGE_MIN", "30"))
+MAX_AGE_HOURS = float(env("MAX_AGE_HOURS", "24"))
+GEMINI_DAILY_CAP = int(env("GEMINI_DAILY_CAP", "18"))  # free tier of some models: 20 requests/day
+GEMINI_PER_RUN = int(env("GEMINI_PER_RUN", "3"))
+GEMINI_GAP_SEC = int(env("GEMINI_GAP_SEC", "13"))
 MAX_SP_CHECKS = 150
 CHECK_AFTER_HOURS = 6
 
@@ -41,13 +47,29 @@ SYSTEM = env("COMMENT_RULES") or "Write one short, relevant comment for this blo
 
 
 def rpc(method, params):
-    r = requests.post(API, json={"jsonrpc": "2.0", "method": method,
-                                 "params": params, "id": 1}, timeout=30)
-    r.raise_for_status()
-    j = r.json()
-    if "error" in j:
-        raise RuntimeError(j["error"])
-    return j["result"]
+    # Retry temporary Steem API failures (e.g. rate limits or gateway errors).
+    last_error = None
+    for attempt in range(3):
+        try:
+            r = requests.post(API, json={"jsonrpc": "2.0", "method": method,
+                                         "params": params, "id": 1}, timeout=30)
+            r.raise_for_status()
+            j = r.json()
+            if "error" in j:
+                raise RuntimeError(j["error"])
+            return j["result"]
+        except requests.exceptions.HTTPError as e:
+            last_error = e
+            status = e.response.status_code if e.response is not None else "unknown"
+            print(f"Steem API HTTP {status} on {method} (attempt {attempt + 1}/3)")
+            if status not in (429, 500, 502, 503, 504):
+                raise
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            last_error = e
+            print(f"Steem API connection issue on {method} (attempt {attempt + 1}/3)")
+        if attempt < 2:
+            time.sleep(2 ** attempt)
+    raise last_error
 
 
 def now():
@@ -76,7 +98,7 @@ def save_state(f, state):
 
 # ---------- steem helpers ----------
 def recent_posts():
-    cutoff = now() - dt.timedelta(hours=24)
+    cutoff = now() - dt.timedelta(hours=MAX_AGE_HOURS)
     out, start = [], {}
     for _ in range(MAX_PAGES):
         try:
@@ -204,16 +226,25 @@ def too_similar(text, recent):
     return False
 
 
+def llm_post(**kw):
+    """POST to Gemini, retrying only on temporary server errors (a 429 is not retried)."""
+    for i in range(3):
+        r = requests.post(LLM_URL, **kw)
+        if r.status_code in (500, 502, 503, 504) and i < 2:
+            time.sleep(20 * (i + 1) + random.randint(0, 5))
+            continue
+        r.raise_for_status()
+        return r
+
+
 def make_comment(post):
-    r = requests.post(
-        LLM_URL,
+    r = llm_post(
         headers={"x-goog-api-key": LLM_KEY, "Content-Type": "application/json"},
         json={"systemInstruction": {"parts": [{"text": SYSTEM}]},
               "contents": [{"role": "user", "parts": [
                   {"text": f"Title: {post['title']}\n\n{post['body'][:6000]}"}]}],
               "generationConfig": {"maxOutputTokens": 2048, "temperature": 0.8}},
         timeout=60)
-    r.raise_for_status()
     cand = r.json()["candidates"][0]
     if cand.get("finishReason") not in (None, "STOP"):
         return None  # cut off or blocked, never post a partial comment
@@ -239,6 +270,9 @@ def main():
     today = now().strftime("%Y-%m-%d")
     sent_today = state["sent"].get(today, 0)
     state["sent"] = {today: sent_today}
+    gem_today = state.setdefault("gem", {}).get(today, 0)
+    state["gem"] = {today: gem_today}
+    run_calls = 0
     budget = min(MAX_PER_RUN, DAILY_LIMIT - sent_today)
     if budget <= 0:
         print("daily limit reached")
@@ -265,7 +299,8 @@ def main():
              if p["author"].lower() not in BLACKLIST
              and p["author"] != ACCOUNT
              and now().timestamp() - state["last_comment"].get(p["author"], 0) > cool
-             and len(p["body"]) > 400]
+             and len(p["body"]) > 400
+             and (now() - parse_ts(p["created"])).total_seconds() >= MIN_AGE_MIN * 60]
     counts = {}
     for p in posts:
         counts[p["author"]] = counts.get(p["author"], 0) + 1
@@ -277,7 +312,7 @@ def main():
     print(f"posts={len(posts)} candidates={len(cands)} budget={budget}")
 
     steem = None if DRY_RUN else Steem(node=[API], keys=[POSTING_KEY])
-    checks, done, seen_authors = 0, 0, set()
+    checks, done, seen_authors, fails = 0, 0, set(), 0
 
     for p in cands:
         if done >= budget or checks >= MAX_SP_CHECKS:
@@ -289,24 +324,58 @@ def main():
         try:
             if sp_of(p["author"]) < MIN_SP or profile_looks_like_project(p["author"]):
                 continue
-            text = make_comment(p)
-            time.sleep(5)
+            if gem_today >= GEMINI_DAILY_CAP or run_calls >= GEMINI_PER_RUN:
+                print("gemini call cap reached, stopping this run")
+                break
+            gem_today += 1
+            run_calls += 1
+            state["gem"][today] = gem_today
+            try:
+                text = make_comment(p)
+            finally:
+                time.sleep(GEMINI_GAP_SEC)  # stay under the per-minute limit
         except Exception as e:
-            print("skip:", type(e).__name__)
+            detail = getattr(getattr(e, "response", None), "status_code", None)
+            suffix = f" HTTP {detail}" if detail is not None else f": {e}"
+            resp = getattr(e, "response", None)
+            src = "gemini" if resp is not None and "generativelanguage" in str(resp.url) else "steem"
+            print(f"skip: {type(e).__name__}{suffix} ({src})")
+            if detail == 429 and src == "gemini":
+                try:
+                    print("gemini says:", resp.json()["error"]["message"][:250])
+                except Exception:
+                    pass
+                print("gemini quota hit, stopping this run")
+                break
+            fails = fails + 1 if detail == 429 else 0
+            if fails >= 3:
+                print("rate limited, stopping this run")
+                break
             continue
+        fails = 0
         if not text or is_generic(text, p) or too_similar(text, state["recent"]):
             continue
 
         if DRY_RUN:
-            print(f"[dry run] -> {p['author']}/{p['permlink']}\n{text}\n" if LOG_TEXT
-                  else "[dry run] comment generated")
+            print(f"[dry run] would upvote ({UPVOTE_WEIGHT / 100:.0f}%) then comment -> "
+                  f"{p['author']}/{p['permlink']}\n{text}\n" if LOG_TEXT
+                  else f"[dry run] would upvote then comment -> {p['author']}/{p['permlink']}")
         else:
+            # Vote on the target post first. If voting fails, do not publish the comment.
+            try:
+                steem.vote(weight=UPVOTE_WEIGHT / 100,
+                           identifier=f"@{p['author']}/{p['permlink']}",
+                           account=ACCOUNT)
+            except Exception as e:
+                print(f"upvote failed; comment skipped: {type(e).__name__}: {e}")
+                continue
+
             permlink = re.sub(r"[^a-z0-9-]", "-", f"re-{p['author']}-{int(time.time())}".lower())
             try:
                 steem.post(title="", body=text, author=ACCOUNT, permlink=permlink,
                           reply_identifier=f"{p['author']}/{p['permlink']}")
             except Exception as e:
-                print("post failed:", type(e).__name__)
+                print("post failed after upvote:", type(e).__name__)
                 continue
             state["tracked"].append({"target": p["author"], "permlink": permlink,
                                      "ts": now().timestamp(), "checked": False})
