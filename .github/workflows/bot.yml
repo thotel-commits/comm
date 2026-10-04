@@ -40,6 +40,7 @@ jobs:
           MIN_SP: ${{ vars.MIN_SP }}
           DAILY_LIMIT: ${{ vars.DAILY_LIMIT }}
           MAX_PER_RUN: ${{ vars.MAX_PER_RUN }}
+          UPVOTE_WEIGHT: ${{ vars.UPVOTE_WEIGHT }}
           RUN_EVERY_MIN: ${{ vars.RUN_EVERY_MIN }}
           MIN_GAP_MIN: ${{ vars.MIN_GAP_MIN }}
           JITTER_MAX_SEC: ${{ vars.JITTER_MAX_SEC }}
@@ -49,6 +50,11 @@ jobs:
           LOG_TEXT: ${{ vars.LOG_TEXT }}
           MAX_WORDS: ${{ vars.MAX_WORDS }}
           MAX_POSTS_PER_DAY: ${{ vars.MAX_POSTS_PER_DAY }}
+          MIN_AGE_MIN: ${{ vars.MIN_AGE_MIN }}
+          MAX_AGE_HOURS: ${{ vars.MAX_AGE_HOURS }}
+          GEMINI_DAILY_CAP: ${{ vars.GEMINI_DAILY_CAP }}
+          GEMINI_PER_RUN: ${{ vars.GEMINI_PER_RUN }}
+          GEMINI_GAP_SEC: ${{ vars.GEMINI_GAP_SEC }}
         run: python bot.py
 
       - name: Save encrypted state
