@@ -37,6 +37,7 @@ jobs:
           EXTRA_SKIP_HINTS: ${{ secrets.EXTRA_SKIP_HINTS }}
           # variables
           STEEM_ACCOUNT: ${{ vars.STEEM_ACCOUNT }}
+          APP_NAME: ${{ vars.APP_NAME }}
           MIN_SP: ${{ vars.MIN_SP }}
           DAILY_LIMIT: ${{ vars.DAILY_LIMIT }}
           MAX_PER_RUN: ${{ vars.MAX_PER_RUN }}
