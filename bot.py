@@ -20,6 +20,7 @@ def env(name, default=""):
 
 ACCOUNT = env("STEEM_ACCOUNT")
 POSTING_KEY = env("STEEM_POSTING_KEY")
+APP_NAME = env("APP_NAME", "commbot/1.0")  # written to json_metadata["app"] of comments
 MIN_SP = float(env("MIN_SP", "5000"))
 DAILY_LIMIT = int(env("DAILY_LIMIT", "20"))
 MAX_PER_RUN = int(env("MAX_PER_RUN", "1"))
@@ -373,7 +374,8 @@ def main():
             permlink = re.sub(r"[^a-z0-9-]", "-", f"re-{p['author']}-{int(time.time())}".lower())
             try:
                 steem.post(title="", body=text, author=ACCOUNT, permlink=permlink,
-                          reply_identifier=f"{p['author']}/{p['permlink']}")
+                          reply_identifier=f"{p['author']}/{p['permlink']}",
+                           app=APP_NAME)
             except Exception as e:
                 print("post failed after upvote:", type(e).__name__)
                 continue
