@@ -20,7 +20,7 @@ def env(name, default=""):
 
 ACCOUNT = env("STEEM_ACCOUNT")
 POSTING_KEY = env("STEEM_POSTING_KEY")
-APP_NAME = env("APP_NAME", "commbot/1.0")  # written to json_metadata["app"] of comments
+APP_NAME = env("APP_NAME", "st/1.0")  # written to json_metadata["app"] of comments
 MIN_SP = float(env("MIN_SP", "5000"))
 DAILY_LIMIT = int(env("DAILY_LIMIT", "20"))
 MAX_PER_RUN = int(env("MAX_PER_RUN", "1"))
